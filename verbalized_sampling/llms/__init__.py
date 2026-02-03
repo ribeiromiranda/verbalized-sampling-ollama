@@ -45,12 +45,11 @@ def get_model(
     use_vllm: bool = False,
     num_workers: int = 128,
     strict_json: bool = False,
+    provider: str = None,
 ) -> BaseLLM:
     """Get a model instance."""
-    if model_name.startswith("ollama/"):
+    if provider == "ollama":
         model_class = LLM_REGISTRY["ollama"]
-        # Strip the prefix for the actual model name passed to Ollama
-        model_name = model_name[7:]  # len("ollama/") == 7
     elif "claude" in model_name:
         if os.environ.get("ANTHROPIC_API_KEY") is None:
             print("ANTHROPIC_API_KEY is not set, falling back to openrouter")

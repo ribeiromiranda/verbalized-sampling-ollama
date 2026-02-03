@@ -16,7 +16,7 @@ import json
 import os
 from typing import Any, Dict, List
 
-from openai import OpenAI
+from ollama import Client
 from pydantic import BaseModel
 
 from verbalized_sampling.llms.base import BaseLLM
@@ -32,31 +32,52 @@ class OllamaLLM(BaseLLM):
     ):
         super().__init__(model_name, config, num_workers, strict_json)
 
-        # Ollama requires a base_url and a dummy api_key
-        base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-        self.client = OpenAI(base_url=base_url, api_key="ollama")
+        # Ollama requires a base_url
+        base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.client = Client(host=base_url)
 
     def _chat(self, messages: List[Dict[str, str]]) -> str:
-        response = self.client.chat.completions.create(
+        # Map OpenAI config params to Ollama options if needed
+        options = {}
+        if "temperature" in self.config:
+            options["temperature"] = self.config["temperature"]
+        if "top_p" in self.config:
+            options["top_p"] = self.config["top_p"]
+        if "seed" in self.config:
+            options["seed"] = self.config["seed"]
+        # Add other options as needed
+
+        response = self.client.chat(
             model=self.model_name,
             messages=messages,
-            **self.config,
+            options=options,
         )
-        response = response.choices[0].message.content
-        if response:
-            # response = response.replace("\n", "")
-            # I think removing newlines might be aggressive for all models, but OpenAILLM does it.
-            # I will follow OpenAILLM behavior for now.
-            response = response.replace("\n", "")
-            if response.startswith('"') and response.endswith('"'):
-                response = response[1:-1]
-        return response
+        # response is a dict: {'model': '...', 'created_at': '...', 'message': {'role': 'assistant', 'content': '...'}}
+        content = response["message"]["content"]
+
+        if content:
+            if content.startswith('"') and content.endswith('"'):
+                content = content[1:-1]
+        return content
 
     def _parse_response_with_schema(self, response: str) -> List[Dict[str, Any]]:
         """Parse the response based on the provided schema."""
         try:
             if isinstance(response, str):
-                parsed = json.loads(response)
+                # Clean up markdown code blocks if present
+                clean_response = response.strip()
+                if "```json" in clean_response:
+                    start = clean_response.find("```json") + 7
+                    end = clean_response.find("```", start)
+                    if end != -1:
+                        clean_response = clean_response[start:end].strip()
+                elif "```" in clean_response:
+                    start = clean_response.find("```") + 3
+                    end = clean_response.rfind("```")
+                    if end != -1 and end > start:
+                        clean_response = clean_response[start:end].strip()
+
+                parsed = json.loads(clean_response)
 
                 # Handle double-escaped JSON strings (i.e., string inside a string)
                 if isinstance(parsed, str):
@@ -124,15 +145,37 @@ class OllamaLLM(BaseLLM):
         self, messages: List[Dict[str, str]], schema: BaseModel
     ) -> List[Dict[str, Any]]:
         try:
-            completion = self.client.chat.completions.create(
+            # Map OpenAI config params to Ollama options
+            options = {}
+            if "temperature" in self.config:
+                options["temperature"] = self.config["temperature"]
+            if "top_p" in self.config:
+                options["top_p"] = self.config["top_p"]
+            if "seed" in self.config:
+                options["seed"] = self.config["seed"]
+
+            # Use schema directly if supported or fallback to 'json' and parsing
+            # Ollama Python client supports `format=schema.model_json_schema()`
+            schema_to_use = schema
+            if hasattr(schema, "model_json_schema"):
+                schema_to_use = schema.model_json_schema()
+            elif (
+                isinstance(schema, dict)
+                and schema.get("type") == "json_schema"
+                and "json_schema" in schema
+            ):
+                # Extract inner schema from OpenAI format
+                schema_to_use = schema["json_schema"].get("schema", schema["json_schema"])
+
+            response = self.client.chat(
                 model=self.model_name,
                 messages=messages,
-                **self.config,
-                response_format=schema.model_json_schema() if hasattr(schema, 'model_json_schema') else schema,
+                options=options,
+                format=schema_to_use,
             )
 
-            response = completion.choices[0].message.content
-            parsed_response = self._parse_response_with_schema(response)
+            content = response["message"]["content"]
+            parsed_response = self._parse_response_with_schema(content)
             return parsed_response
         except Exception as e:
             print(f"Error: {e}")

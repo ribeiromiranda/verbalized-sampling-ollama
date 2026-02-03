@@ -34,7 +34,7 @@ def verbalize(
     tau: float = 0.12,
     temperature: float = 0.9,
     # Provider/model
-    provider: Literal["auto", "openai", "anthropic", "google"] = "auto",
+    provider: Literal["auto", "openai", "anthropic", "google", "ollama"] = "auto",
     model: Optional[str] = None,
     # Robustness
     min_k_survivors: int = 3,
@@ -118,6 +118,7 @@ def verbalize(
         config=config,
         num_workers=num_workers,
         strict_json=use_strict_json,
+        provider=provider,
     )
 
     base_template = CreativityPromptTemplate()
@@ -134,7 +135,9 @@ def verbalize(
     full_messages = [{"role": "system", "content": vs_system_prompt}, *messages]
 
     # Get schema (REUSE existing schema builder!)
-    schema = get_schema(Method.VS_STANDARD, use_tools=False, probability_definition=probability_definition)
+    schema = get_schema(
+        Method.VS_STANDARD, use_tools=False, probability_definition=probability_definition
+    )
 
     # Generate with retries
     responses = None
@@ -160,9 +163,7 @@ def verbalize(
 
             # Validate we got at least min_k_survivors
             if len(responses) < min_k_survivors and attempt < retries:
-                raise ValueError(
-                    f"Expected at least {min_k_survivors} items, got {len(responses)}"
-                )
+                raise ValueError(f"Expected at least {min_k_survivors} items, got {len(responses)}")
 
             break  # Success
 
@@ -235,6 +236,8 @@ def _auto_select_model(provider: str) -> str:
         return "claude-3-7-sonnet"
     elif provider == "google" or (provider == "auto" and os.getenv("GOOGLE_API_KEY")):
         return "gemini-2.5-flash"
+    elif provider == "ollama":
+        return "ollama/llama3"
     elif provider == "auto":
         # Check all possible API keys
         if os.getenv("OPENAI_API_KEY"):
@@ -268,5 +271,7 @@ def _infer_provider(model: str) -> str:
         return "anthropic"
     elif "gemini" in model_lower:
         return "google"
+    elif "ollama" in model_lower:
+        return "ollama"
     else:
         return "unknown"
